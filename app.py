@@ -1,21 +1,30 @@
-import os, base64, io, logging
+import os, logging
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from PIL import Image
+import requests as http_req
 import google.genai as genai
 from google.genai import types
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cv-gemini")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-MODEL = "gemini-2.0-flash"
+# ── SaaS Engine Config (the technology is HIDDEN there) ──
+SAAS_URL = "https://wasel-saas-engine-112458895076.europe-west1.run.app/api/v1/translate"
+SAAS_API_KEY = "dx_egypt_key_2026"
 
-PROMPT = """You are a sign language interpreter.
-If you see a hand gesture or sign: reply ONLY the meaning (1-3 words).
-If no gesture: reply ...
-No explanations. Just the word."""
+# ── Gemini for Chat Bot only (client-side feature, NOT translation) ──
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+chat_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+CHAT_MODEL = "gemini-2.0-flash"
+
+CHAT_PROMPT = """أنت موظف خدمة عملاء ذكي ولطيف في شركة "كونيكتا" (Konecta).
+تتحدث بالعامية المصرية بأسلوب ودود ومحترف.
+المستخدم شخص أصم يتواصل معك عبر لغة الإشارة (تمت ترجمتها لك تلقائياً).
+مهمتك:
+- افهم طلبه من الجملة المترجمة حتى لو كانت مختصرة أو غير مكتملة.
+- رد بإجابة مفيدة ومختصرة (سطر أو سطرين).
+- لو الطلب غير واضح، اسأل سؤال بسيط للتوضيح.
+- كن إيجابي ومشجع دائماً."""
 
 app = Flask(__name__)
 CORS(app)
@@ -42,30 +51,33 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 
 #chat-sidebar{width:380px;background:#111;display:flex;flex-direction:column;}
 #chat-log{flex:1;padding:20px;overflow-y:auto;display:flex;flex-direction:column;gap:15px;}
-.msg{padding:12px 18px;border-radius:12px;font-size:15px;line-height:1.6;animation:fadeIn 0.3s;}
+.msg{padding:12px 18px;border-radius:12px;font-size:15px;line-height:1.6;animation:fadeIn 0.3s;max-width:90%;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .msg.user{background:#113a29;align-self:flex-start;color:#00ff88;border-top-right-radius:0;border:1px solid #00ff8844;}
+.msg.bot{background:#1a1a3a;align-self:flex-end;color:#aaccff;border-top-left-radius:0;border:1px solid #4466aa44;}
+.msg.typing{background:#222;color:#888;font-style:italic;border:1px solid #33333366;}
 
 #composer{padding:20px;background:#1a1a1a;border-top:1px solid #333;display:flex;flex-direction:column;gap:10px;}
 #sentenceBox{width:100%;padding:14px;background:#000;border:1px solid #444;color:#fff;border-radius:8px;font-family:inherit;font-size:16px;outline:none;transition:0.3s;}
 #sentenceBox:focus{border-color:#00ff88;box-shadow:0 0 10px rgba(0,255,136,0.2);}
 #sendBtn{background:#333;color:#fff;padding:12px;border-radius:8px;}
 #sendBtn:hover{background:#00ff88;color:#000;}
+#sendBtn:disabled{background:#222;color:#555;cursor:not-allowed;}
 </style></head><body dir="rtl">
 
 <div id="top-bar">
     <div id="brand">WASEL v4 PRO — KONECTA AI ENGINE</div>
-    <div style="font-size:12px;color:#666;" id="bot">الذكاء الاصطناعي جاهز</div>
+    <div style="font-size:12px;color:#666;" id="status">الذكاء الاصطناعي جاهز</div>
 </div>
 
 <div id="main-content">
     <div id="chat-sidebar">
         <div id="chat-log">
-            <div class="msg user" style="color:#ccc;border-color:#444;background:#222;">مرحباً بك! ابدأ بالإشارة وسأقوم بتجميع الجملة هنا تلقائياً.</div>
+            <div class="msg bot">أهلاً بيك! 👋 أنا مساعدك الذكي من كونيكتا. ابدأ بالإشارة وهجمّع الكلام، وبعدين ابعته وهرد عليك فوراً!</div>
         </div>
         <div id="composer">
-            <input type="text" id="sentenceBox" placeholder="الترجمة ستظهر هنا (يمكنك التعديل)...">
-            <button class="btn" id="sendBtn" onclick="sendToChat()">إرسال الجملة للشات</button>
+            <input type="text" id="sentenceBox" placeholder="الترجمة ستتجمع هنا... عدّلها لو حبيت ثم اضغط إرسال">
+            <button class="btn" id="sendBtn" onclick="sendToChat()">📨 إرسال الجملة للشات</button>
         </div>
     </div>
     
@@ -73,7 +85,7 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
         <video id="v" autoplay playsinline muted></video>
         <div id="overlay">
             <div id="live-word">في انتظار الكاميرا...</div>
-            <button class="btn" id="startBtn" onclick="goLoop()">تشغيل الكاميرا والترجمة</button>
+            <button class="btn" id="startBtn" onclick="goLoop()">▶ تشغيل الترجمة</button>
         </div>
     </div>
 </div>
@@ -81,66 +93,90 @@ video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 <canvas id="cv" style="display:none"></canvas>
 
 <script>
-const v=document.getElementById('v'), cv=document.getElementById('cv');
-const cx=cv.getContext('2d', {willReadFrequently: true});
-const tx=document.getElementById('live-word');
-const bt=document.getElementById('bot');
-const btn=document.getElementById('startBtn');
-const sentenceBox=document.getElementById('sentenceBox');
-const chatLog=document.getElementById('chat-log');
+var SAAS_URL = "/proxy_translate"; // Calls OUR backend which proxies to hidden SaaS
 
-let busy=false;
-let running=false;
-let lastImageData = null;
+var v=document.getElementById('v'), cv=document.getElementById('cv');
+var cx=cv.getContext('2d', {willReadFrequently: true});
+var tx=document.getElementById('live-word');
+var st=document.getElementById('status');
+var btn=document.getElementById('startBtn');
+var sentenceBox=document.getElementById('sentenceBox');
+var chatLog=document.getElementById('chat-log');
+var sendBtnEl=document.getElementById('sendBtn');
+
+var busy=false, running=false, lastImageData=null;
 
 navigator.mediaDevices.getUserMedia({video:{width:320,height:240,facingMode:'user'}})
-.then(s=>{v.srcObject=s;tx.textContent='الكاميرا جاهزة. اضغط تشغيل.';tx.style.color='#aaa';})
-.catch(e=>{tx.textContent='خطأ بالكاميرا: '+e.message;});
+.then(function(s){v.srcObject=s;tx.textContent='الكاميرا جاهزة. اضغط تشغيل ▶';tx.style.color='#aaa';})
+.catch(function(e){tx.textContent='خطأ بالكاميرا: '+e.message;});
 
 function goLoop() {
     if(!running) {
         running = true;
-        btn.textContent = "إيقاف الترجمة";
+        btn.textContent = "⏹ إيقاف الترجمة";
         btn.classList.add('active');
         tx.textContent = 'قم بعمل إشارة...';
         tx.style.color = '#aaa';
         go();
     } else {
         running = false;
-        btn.textContent = "تشغيل الكاميرا والترجمة";
+        btn.textContent = "▶ تشغيل الترجمة";
         btn.classList.remove('active');
         tx.textContent = 'الترجمة متوقفة';
         tx.style.color = '#aaa';
     }
 }
 
-function sendToChat() {
-    const text = sentenceBox.value.trim();
-    if(!text) return;
-    
-    const div = document.createElement('div');
-    div.className = 'msg user';
-    div.innerHTML = '<strong>أنت:</strong> ' + text;
+function addMsg(text, who) {
+    var div = document.createElement('div');
+    div.className = 'msg ' + who;
+    div.textContent = text;
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
-    
-    sentenceBox.value = ''; // Clear after sending
+    return div;
 }
 
-// Client-Side Motion Detection Algorithm
+function sendToChat() {
+    var text = sentenceBox.value.trim();
+    if(!text) return;
+    
+    addMsg('🤟 ' + text, 'user');
+    sentenceBox.value = '';
+    
+    sendBtnEl.disabled = true;
+    sendBtnEl.textContent = '⏳ جاري الرد...';
+    var typingMsg = addMsg('جاري الكتابة...', 'typing');
+    
+    fetch('/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        chatLog.removeChild(typingMsg);
+        if (d.reply) addMsg('🤖 ' + d.reply, 'bot');
+    })
+    .catch(function(e) {
+        chatLog.removeChild(typingMsg);
+        addMsg('خطأ في الاتصال', 'bot');
+    })
+    .finally(function() {
+        sendBtnEl.disabled = false;
+        sendBtnEl.textContent = '📨 إرسال الجملة للشات';
+    });
+}
+
 function hasMotion(currentData, previousData) {
     if (!previousData) return true;
-    let diffCount = 0;
-    const thresh = 35; // Sensitivity threshold for pixel difference
-    // Check every 4th pixel to save CPU resources in the browser
-    for (let i = 0; i < currentData.data.length; i += 16) {
+    var diffCount = 0, thresh = 35;
+    for (var i = 0; i < currentData.data.length; i += 16) {
         if (Math.abs(currentData.data[i] - previousData.data[i]) > thresh ||
             Math.abs(currentData.data[i+1] - previousData.data[i+1]) > thresh ||
             Math.abs(currentData.data[i+2] - previousData.data[i+2]) > thresh) {
             diffCount++;
         }
     }
-    // If more than ~1.5% of sampled pixels changed, it's motion
     return diffCount > (currentData.data.length / 16) * 0.015; 
 }
 
@@ -151,30 +187,31 @@ function go(){
     cv.width=320;cv.height=240;
     cx.drawImage(v,0,0,320,240);
     
-    // Calculate Motion
-    const currentImageData = cx.getImageData(0, 0, 320, 240);
-    const motionDetected = hasMotion(currentImageData, lastImageData);
+    var currentImageData = cx.getImageData(0, 0, 320, 240);
+    var motionDetected = hasMotion(currentImageData, lastImageData);
     lastImageData = currentImageData;
     
-    // If NO motion detected, skip API call to save resources and costs
     if (!motionDetected) {
-        bt.textContent = "سكون (لا توجد حركة)...";
+        st.textContent = "سكون (لا توجد حركة)...";
         setTimeout(go, 100);
         return;
     }
 
     busy=true;
-    // WEBP Compression (Dramatically smaller payload than JPEG)
-    const d=cv.toDataURL('image/webp',0.3); 
-    bt.textContent='⚡ جاري التحليل...';
+    var d=cv.toDataURL('image/webp',0.3); 
+    st.textContent='⚡ جاري التحليل...';
     
-    fetch('/translate',{
+    fetch(SAAS_URL, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({image:d})
     })
-    .then(r=>r.json()).then(d=>{
-        const t=d.translation||'...';
+    .then(function(r){
+        if(r.status === 204) return {translation:'...'};
+        return r.json();
+    })
+    .then(function(d){
+        var t=d.translation||'...';
         if(t==='...'||t.length<2){
             tx.textContent='قم بعمل إشارة...';
             tx.style.color='#aaa';
@@ -182,17 +219,16 @@ function go(){
             tx.textContent=t;
             tx.style.color='#0ff';
             
-            // Sentence accumulation (prevent duplicates of the exact same word in a row)
-            const currentParts = sentenceBox.value.split(' ');
-            const lastWord = currentParts.length > 0 ? currentParts[currentParts.length - 1] : '';
+            var currentParts = sentenceBox.value.split(' ');
+            var lastWord = currentParts.length > 0 ? currentParts[currentParts.length - 1] : '';
             if (t !== lastWord) {
                 sentenceBox.value = sentenceBox.value ? sentenceBox.value + ' ' + t : t;
             }
         }
-        bt.textContent='⚡ Gemini 2.0 Flash — '+new Date().toLocaleTimeString();
+        st.textContent='⚡ Konecta AI — '+new Date().toLocaleTimeString();
         busy=false;
-        if(running) setTimeout(go, 50); // Instant retry after response
-    }).catch(e=>{bt.textContent='خطأ: '+e;busy=false; if(running) setTimeout(go, 500);})
+        if(running) setTimeout(go, 50);
+    }).catch(function(e){st.textContent='خطأ: '+e;busy=false; if(running) setTimeout(go, 500);})
 }
 </script></body></html>
 """
@@ -201,27 +237,54 @@ function go(){
 def index():
     return render_template_string(PAGE)
 
-@app.route('/translate', methods=['POST'])
-def translate():
-    if not client:
-        return jsonify({'translation': 'API Key Missing'}), 500
+@app.route('/proxy_translate', methods=['POST'])
+def proxy_translate():
+    """Proxy endpoint: receives image from frontend, forwards to SaaS engine.
+    The client NEVER sees the SaaS URL or API key."""
+    try:
+        data = request.json
+        image_data = data.get('image', '')
+        
+        # Forward to the hidden SaaS engine
+        saas_response = http_req.post(
+            SAAS_URL,
+            json={"images_base64": [image_data]},
+            headers={"X-API-Key": SAAS_API_KEY, "Content-Type": "application/json"},
+            timeout=6
+        )
+        
+        if saas_response.status_code == 204:
+            return "", 204
+        elif saas_response.status_code == 200:
+            return jsonify(saas_response.json()), 200
+        else:
+            logger.error(f"SaaS returned {saas_response.status_code}")
+            return jsonify({"translation": "..."}), 200
+            
+    except Exception as e:
+        logger.error(f"Proxy error: {e}")
+        return jsonify({"translation": "..."}), 200
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """Chat bot - responds to accumulated sign language translations."""
+    if not chat_client:
+        return jsonify({'reply': 'مفتاح API مفقود'}), 500
         
     try:
-        d = request.json
-        img_b = base64.b64decode(d['image'].split(',')[1])
-        pil = Image.open(io.BytesIO(img_b))
-        r = client.models.generate_content(
-            model=MODEL, contents=[PROMPT, pil],
-            config=types.GenerateContentConfig(max_output_tokens=20, temperature=0.1)
+        user_text = request.json.get('text', '')
+        if not user_text:
+            return jsonify({'reply': 'لم أفهم، ممكن تعيد الإشارة؟'})
+        
+        r = chat_client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=[CHAT_PROMPT, f"المستخدم قال (عبر لغة الإشارة): {user_text}"],
+            config=types.GenerateContentConfig(max_output_tokens=150, temperature=0.7)
         )
-        t = r.text.strip()
-        # Clean markdown artifacts if any
-        if t.startswith("```"):
-             t = t.split('\n')[1].strip()
-        return jsonify({'translation': t})
+        return jsonify({'reply': r.text.strip()})
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return jsonify({'translation': '...'}), 200
+        logger.error(f"Chat error: {e}")
+        return jsonify({'reply': 'حصل مشكلة تقنية، جرب تاني.'})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
