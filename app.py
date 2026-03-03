@@ -335,47 +335,39 @@ function sendToChat() {
     sendBtnEl.textContent = '⏳ جاري الرد...';
     var typingMsg = addMsg('', 'typing');
     
-    // Use SSE for streaming response
-    var botMsg = null;
-    var fullText = '';
-    
-    var evtSource = new EventSource('/chat_stream?text=' + encodeURIComponent(text));
-    
-    evtSource.onmessage = function(event) {
-        var data = JSON.parse(event.data);
-        
-        if (data.chunk) {
-            fullText += data.chunk;
-            if (!botMsg) {
-                // Remove typing indicator and create bot message
-                if (typingMsg.parentNode) chatLog.removeChild(typingMsg);
-                botMsg = addMsg('🤖 ' + fullText, 'bot');
-            } else {
-                botMsg.textContent = '🤖 ' + fullText;
-            }
-            chatLog.scrollTop = chatLog.scrollHeight;
-        }
-        
-        if (data.done) {
-            evtSource.close();
-            if (!botMsg && typingMsg.parentNode) {
-                chatLog.removeChild(typingMsg);
-                addMsg('🤖 ' + (fullText || data.full_text || 'لم أفهم، ممكن تعيد تاني؟'), 'bot');
-            }
-            sendBtnEl.disabled = false;
-            sendBtnEl.textContent = '📨 إرسال الجملة للشات';
-        }
-    };
-    
-    evtSource.onerror = function() {
-        evtSource.close();
+    // Use REST /chat with client-side typing animation
+    fetch('/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
         if (typingMsg.parentNode) chatLog.removeChild(typingMsg);
-        if (!botMsg) {
-            addMsg('🤖 ' + (fullText || 'حصل مشكلة تقنية، جرب تاني.'), 'bot');
+        if (d.reply) {
+            // Word-by-word typing animation for premium feel
+            var words = d.reply.split(' ');
+            var botMsg = addMsg('🤖 ', 'bot');
+            var i = 0;
+            function typeWord() {
+                if (i < words.length) {
+                    botMsg.textContent += (i > 0 ? ' ' : '') + words[i];
+                    chatLog.scrollTop = chatLog.scrollHeight;
+                    i++;
+                    setTimeout(typeWord, 40);
+                }
+            }
+            typeWord();
         }
+    })
+    .catch(function(e) {
+        if (typingMsg.parentNode) chatLog.removeChild(typingMsg);
+        addMsg('🤖 حصل مشكلة تقنية، جرب تاني.', 'bot');
+    })
+    .finally(function() {
         sendBtnEl.disabled = false;
         sendBtnEl.textContent = '📨 إرسال الجملة للشات';
-    };
+    });
 }
 
 // Allow Enter key to send
@@ -461,18 +453,33 @@ def chat_stream():
         return Response(err(), mimetype='text/event-stream')
     
     def generate():
+        contents = [CHAT_PROMPT, f"المستخدم قال (عبر لغة الإشارة): {user_text}"]
+        config = types.GenerateContentConfig(max_output_tokens=150, temperature=0.7)
+        
         try:
-            response = chat_client.models.generate_content(
+            # Try streaming first (generate_content_stream)
+            try:
+                response = chat_client.models.generate_content_stream(
+                    model=CHAT_MODEL,
+                    contents=contents,
+                    config=config
+                )
+                for chunk in response:
+                    if chunk.text:
+                        yield f"data: {json_mod.dumps({'chunk': chunk.text})}\n\n"
+                yield f"data: {json_mod.dumps({'done': True})}\n\n"
+                return
+            except AttributeError:
+                pass  # Method doesn't exist in this version, fall through
+            
+            # Fallback: non-streaming, send full reply at once
+            r = chat_client.models.generate_content(
                 model=CHAT_MODEL,
-                contents=[CHAT_PROMPT, f"المستخدم قال (عبر لغة الإشارة): {user_text}"],
-                config=types.GenerateContentConfig(max_output_tokens=150, temperature=0.7),
-                stream=True
+                contents=contents,
+                config=config
             )
-            
-            for chunk in response:
-                if chunk.text:
-                    yield f"data: {json_mod.dumps({'chunk': chunk.text})}\n\n"
-            
+            reply = r.text.strip() if r.text else "لم أفهم، ممكن تعيد تاني؟"
+            yield f"data: {json_mod.dumps({'chunk': reply})}\n\n"
             yield f"data: {json_mod.dumps({'done': True})}\n\n"
             
         except Exception as e:
