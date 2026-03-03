@@ -1,8 +1,10 @@
+import eventlet
+eventlet.monkey_patch()
+
 import os, logging, base64, io
 from flask import Flask, request, jsonify, render_template_string, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
-import socketio as sio_client
 import google.genai as genai
 from google.genai import types
 
@@ -10,10 +12,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cv-gemini")
 
 # ── SaaS Engine Config (the technology is HIDDEN there) ──
-SAAS_URL = "https://wasel-saas-engine-112458895076.europe-west1.run.app"
-SAAS_WS_URL = SAAS_URL  # SocketIO will handle /socket.io/ path
-SAAS_REST_URL = SAAS_URL + "/api/v1/translate"
-SAAS_API_KEY = "dx_egypt_key_2026"
+SAAS_REST_URL = "https://wasel-saas-engine-112458895076.europe-west1.run.app/api/v1/translate"
+SAAS_API_KEY = os.environ.get("SAAS_API_KEY", "dx_egypt_key_2026")
 
 # ── Gemini for Chat Bot only (client-side feature, NOT translation) ──
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -33,23 +33,7 @@ app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet", ping_timeout=60, ping_interval=25)
 
-# ── Backend SocketIO client → connects to SaaS Engine ──
-saas_socket = None
 
-def get_saas_socket():
-    """Lazy-connect to SaaS Engine WebSocket."""
-    global saas_socket
-    if saas_socket and saas_socket.connected:
-        return saas_socket
-    try:
-        saas_socket = sio_client.Client(reconnection=True, reconnection_attempts=5)
-        saas_socket.connect(SAAS_WS_URL, transports=["websocket", "polling"])
-        saas_socket.emit("auth", {"api_key": SAAS_API_KEY})
-        logger.info("Connected to SaaS Engine WebSocket")
-        return saas_socket
-    except Exception as e:
-        logger.error(f"SaaS WS connect failed: {e}")
-        return None
 
 # ═══════════════════════════════════════════════════════
 # HTML Page — Premium UI with Socket.io + SSE Streaming
@@ -502,7 +486,7 @@ def handle_connect():
 
 @socketio.on('frame')
 def handle_frame(data):
-    """Receive frame from browser, forward to SaaS Engine via WS or REST fallback."""
+    """Receive frame from browser via WS, forward to SaaS Engine via ultra-fast REST, return via WS."""
     import time, requests as http_req
     start = time.time()
     
@@ -511,42 +495,15 @@ def handle_frame(data):
         emit('translation_result', {'translation': '...'})
         return
     
-    # Try WebSocket first
     try:
-        sio = get_saas_socket()
-        if sio and sio.connected:
-            # Use a synchronous event-wait pattern
-            result_holder = {'result': None}
-            
-            @sio.on('result')
-            def on_result(res_data):
-                result_holder['result'] = res_data
-            
-            sio.emit('frame', {'image': image})
-            
-            # Wait for result (max 8 seconds)
-            waited = 0
-            while result_holder['result'] is None and waited < 8.0:
-                import eventlet
-                eventlet.sleep(0.05)
-                waited += 0.05
-            
-            if result_holder['result']:
-                ms = int((time.time() - start) * 1000)
-                result_holder['result']['roundtrip_ms'] = ms
-                emit('translation_result', result_holder['result'])
-                return
-    except Exception as e:
-        logger.warning(f"WS proxy failed, falling back to REST: {e}")
-    
-    # Fallback to REST
-    try:
+        # Server-to-Server REST (safe, ultra-fast ~2-10ms within same cloud region, no race conditions)
         saas_response = http_req.post(
             SAAS_REST_URL,
             json={"images_base64": [image]},
             headers={"X-API-Key": SAAS_API_KEY, "Content-Type": "application/json"},
-            timeout=6
+            timeout=5
         )
+        
         ms = int((time.time() - start) * 1000)
         
         if saas_response.status_code == 204:
@@ -556,9 +513,11 @@ def handle_frame(data):
             result['roundtrip_ms'] = ms
             emit('translation_result', result)
         else:
+            logger.warning(f"SaaS Engine returned status {saas_response.status_code}")
             emit('translation_result', {'translation': '...', 'roundtrip_ms': ms})
+            
     except Exception as e:
-        logger.error(f"REST fallback error: {e}")
+        logger.error(f"SaaS connection error: {e}")
         emit('translation_result', {'translation': '...'})
 
 @socketio.on('disconnect')
