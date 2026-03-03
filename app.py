@@ -23,7 +23,7 @@ CORS(app)
 PAGE = r"""
 <!DOCTYPE html><html><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Wasel v4 Pro - Colab Edition</title>
+<title>Wasel v4 Pro - Konecta AI Engine</title>
 <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -40,11 +40,11 @@ text-shadow:0 2px 20px rgba(0,255,136,0.4);min-height:75px;transition:all .3s}
 </style></head><body>
 <div id='c'>
 <video id='v' autoplay playsinline muted></video>
-<div id='top'><div id='brand'>WASEL v4 PRO — AI TRANSLATOR (COLAB VERSION)</div>
-<div id='txt'>Waiting...</div>
-<button id="startBtn" onclick="goLoop()">Start Translation</button>
+<div id='top'><div id='brand'>WASEL v4 PRO — KONECTA AI ENGINE</div>
+<div id='txt'>في انتظار الكاميرا...</div>
+<button id="startBtn" onclick="goLoop()">تشغيل الترجمة الفورية</button>
 </div>
-<div id='bot'>AI Engine</div>
+<div id='bot'>Konecta AI Engine</div>
 </div>
 <canvas id='cv' style='display:none'></canvas>
 <script>
@@ -54,36 +54,38 @@ bt=document.getElementById('bot'), btn=document.getElementById('startBtn');
 let busy=false;
 let running=false;
 
-navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'}})
-.then(s=>{v.srcObject=s;tx.textContent='Camera Ready. Press Start.';tx.style.color='#555';})
-.catch(e=>{tx.textContent='Camera: '+e.message;});
+navigator.mediaDevices.getUserMedia({video:{width:320,height:240,facingMode:'user'}})
+.then(s=>{v.srcObject=s;tx.textContent='الكاميرا جاهزة. اضغط تشغيل.';tx.style.color='#555';})
+.catch(e=>{tx.textContent='خطأ بالكاميرا: '+e.message;});
 
 function goLoop() {
     if(!running) {
         running = true;
-        btn.textContent = "Stop Translation";
+        btn.textContent = "إيقاف الترجمة";
         btn.style.background = "#ff3333";
-        tx.textContent = 'Show a sign...';
+        btn.style.color = "#fff";
+        tx.textContent = 'قم بعمل إشارة...';
         tx.style.color = '#555';
         go();
     } else {
         running = false;
-        btn.textContent = "Start Translation";
+        btn.textContent = "تشغيل الترجمة الفورية";
         btn.style.background = "#00ff88";
-        tx.textContent = 'Paused';
+        btn.style.color = "#000";
+        tx.textContent = 'الترجمة متوقفة';
         tx.style.color = '#555';
     }
 }
 
 function go(){
     if(!running) return;
-    if(busy) { setTimeout(go, 500); return; }
+    if(busy) { setTimeout(go, 250); return; }
     
     busy=true;
-    cv.width=512;cv.height=384;
-    cx.drawImage(v,0,0,512,384);
-    const d=cv.toDataURL('image/jpeg',0.6);
-    bt.textContent='⚡ Analyzing...';
+    cv.width=320;cv.height=240;
+    cx.drawImage(v,0,0,320,240);
+    const d=cv.toDataURL('image/jpeg',0.3); // Ultra compression for speed
+    bt.textContent='⚡ جاري التحليل...';
     
     fetch('/translate',{
         method:'POST',
@@ -92,12 +94,12 @@ function go(){
     })
     .then(r=>r.json()).then(d=>{
         const t=d.translation||'...';
-        if(t==='...'||t.length<2){tx.textContent='Show a sign...';tx.style.color='#555'}
+        if(t==='...'||t.length<2){tx.textContent='قم بعمل إشارة...';tx.style.color='#555'}
         else{tx.textContent=t;tx.style.color='#00ff88'}
-        bt.textContent='⚡ Gemini 2.0 — '+new Date().toLocaleTimeString();
+        bt.textContent='⚡ Gemini 2.0 Flash — '+new Date().toLocaleTimeString();
         busy=false;
-        if(running) setTimeout(go, 100);
-    }).catch(e=>{bt.textContent='Err: '+e;busy=false; if(running) setTimeout(go, 1000);})
+        if(running) setTimeout(go, 50); // Instant retry
+    }).catch(e=>{bt.textContent='خطأ: '+e;busy=false; if(running) setTimeout(go, 500);})
 }
 </script></body></html>
 """
