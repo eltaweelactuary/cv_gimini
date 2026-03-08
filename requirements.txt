@@ -1,7 +1,9 @@
 flask==3.0.3
 flask-cors==4.0.1
+google-genai>=1.0.0
+Pillow==10.2.0
 flask-socketio==5.3.6
+python-socketio==5.11.2
 eventlet==0.36.1
-google-genai==1.0.0
-requests==2.31.0
+requests==2.32.3
 gunicorn==21.2.0
