@@ -13,7 +13,7 @@ logger = logging.getLogger("cv-gemini")
 SAAS_URL = "https://wasel-saas-engine-112458895076.europe-west1.run.app"
 SAAS_WS_URL = SAAS_URL  # SocketIO will handle /socket.io/ path
 SAAS_REST_URL = SAAS_URL + "/api/v1/translate"
-SAAS_API_KEY = "dx_egypt_key_2026"
+SAAS_API_KEY = os.environ.get("SAAS_API_KEY", "")
 
 # ── Gemini for Chat Bot only (client-side feature, NOT translation) ──
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
